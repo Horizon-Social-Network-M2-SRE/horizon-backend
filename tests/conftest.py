@@ -2,10 +2,14 @@ import os
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.core.config import Settings
-from app.main import create_app
+# Must be set before app.main is imported: the app refuses to start without it.
+os.environ.setdefault("JWT_SECRET", "test-only-secret-" + "x" * 40)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.core.config import Settings  # noqa: E402
+from app.main import create_app  # noqa: E402
 
 TEST_MONGODB_URI = os.environ.get("TEST_MONGODB_URI", "mongodb://localhost:27017")
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
@@ -17,6 +21,7 @@ def settings():
         mongodb_uri=TEST_MONGODB_URI,
         mongodb_db=f"horizon_test_{uuid.uuid4().hex[:12]}",
         redis_url=TEST_REDIS_URL,
+        jwt_secret=os.environ["JWT_SECRET"],
     )
 
 
