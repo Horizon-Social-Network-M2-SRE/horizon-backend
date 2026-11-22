@@ -28,7 +28,7 @@ python3 -m venv .venv
 | `/metrics`      | Prometheus metrics                                        |
 | `/docs`         | OpenAPI UI                                                |
 
-Configuration (environment or `.env`): `MONGODB_URI` (default `mongodb://localhost:27017`),
+Configuration (environment or `.env`): `JWT_SECRET` (**required**), `MONGODB_URI` (default `mongodb://localhost:27017`),
 `MONGODB_DB` (`horizon`), `REDIS_URL` (`redis://localhost:6379/0`).
 
 ## Tests
@@ -45,23 +45,30 @@ TEST_MONGODB_URI=mongodb://localhost:27018 TEST_REDIS_URL=redis://localhost:6380
 
 ```bash
 docker build -t horizon-backend .
-docker run -p 8000:8000 -e MONGODB_URI=... -e REDIS_URL=... horizon-backend
+docker run -p 8000:8000 -e JWT_SECRET=... -e MONGODB_URI=... -e REDIS_URL=... horizon-backend
 ```
 
 Multi-stage image, runs as uid 10001. CI builds it and checks `/health` answers.
 
 ## Auth
 
-| Endpoint             | Body                                     | Result                                   |
-|----------------------|------------------------------------------|------------------------------------------|
-| `POST /auth/login`   | form `username` (email), `password`      | `access_token` (JWT, 15 min), `refresh_token` |
-| `POST /auth/refresh` | `{"refresh_token": ...}`                 | new pair; the old refresh token stops working |
-| `POST /auth/logout`  | bearer token, optional `{"refresh_token"}` | `204`; the access token is refused until it expires |
-| `GET /auth/me`       | bearer token                             | `{"id": ...}`                            |
+| Endpoint             | Request                                | Result                                                       |
+|----------------------|----------------------------------------|--------------------------------------------------------------|
+| `POST /auth/login`   | form `username` (email), `password`    | `{access_token, token_type, expires_in}` (JWT, 15 min) + refresh cookie |
+| `POST /auth/refresh` | refresh cookie (sent by the browser)   | new access token + new cookie; the old refresh token stops working |
+| `POST /auth/logout`  | bearer token                           | `204`, cookie cleared, session ended, access token refused until it expires |
+| `GET /auth/me`       | bearer token                           | `{"id": ...}`                                                |
 
+- **`JWT_SECRET` is required** (32+ characters); the app refuses to start without it. Never commit it:
+  set it in `.env` locally, in Compose, and in the Kubernetes Secret.
+  Generate one: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+- The refresh token is only ever in a cookie: `refresh_token`, `HttpOnly; Secure; SameSite=Strict; Path=/api/auth`.
+  The web client calls with `credentials: 'include'`. When calling the API directly (no Traefik `/api` prefix),
+  set `REFRESH_COOKIE_PATH=/auth`; over plain http locally, `REFRESH_COOKIE_SECURE=false`.
+- Each login is a session (`sid` claim). Redis keys:
+  `auth:session:<sid>` -> current refresh hash, `auth:refresh:<sha256>` -> `<user>:<sid>` (7-day TTL),
+  `auth:deny:<jti>` (TTL = remaining access token lifetime).
 - Users are read from the `users` collection: lowercase `email`, argon2 `passwordHash`
   (`app/auth/security.py`, shared with register).
-- Refresh tokens are opaque and stored hashed in Redis (`auth:refresh:<sha256>`) with a 7-day TTL.
-- Logout writes `auth:deny:<jti>` with a TTL equal to the token's remaining lifetime.
+- Metrics: `auth_login_total{result="success|failure"}`, `auth_refresh_total{result=...}`.
 - Protect a route with `claims: CurrentUser` from `app.auth.deps`.
-- Set `JWT_SECRET` to a long random value in every deployed environment.
