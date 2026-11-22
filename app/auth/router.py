@@ -7,6 +7,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from redis.asyncio import Redis
 
 from app.auth.deps import CurrentUser
+from app.auth.metrics import LOGINS, REFRESHES
 from app.auth.security import verify_password
 from app.auth.tokens import (
     TokenPair,
@@ -70,6 +71,7 @@ async def login(
     """OAuth2 password flow (``username`` is the email). Sets the refresh token cookie."""
     user = await db[USERS].find_one({"email": form.username.strip().lower()}, {"passwordHash": 1})
     if not verify_password(form.password, user.get("passwordHash") if user else None):
+        LOGINS.labels("failure").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -77,6 +79,7 @@ async def login(
         )
     settings = request.app.state.settings
     pair = await issue_tokens(redis, str(user["_id"]), settings)
+    LOGINS.labels("success").inc()
     return _token_response(response, pair, settings)
 
 
@@ -91,8 +94,10 @@ async def refresh(
     token = request.cookies.get(settings.refresh_cookie_name)
     grant = await consume_refresh_token(redis, token) if token and len(token) <= 256 else None
     if grant is None:
+        REFRESHES.labels("failure").inc()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
     pair = await issue_tokens(redis, grant.user_id, settings, session_id=grant.session_id)
+    REFRESHES.labels("success").inc()
     return _token_response(response, pair, settings)
 
 
