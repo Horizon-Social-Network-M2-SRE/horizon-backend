@@ -15,6 +15,7 @@ from app.auth.tokens import (
     issue_tokens,
     revoke_session,
 )
+from app.core.config import Settings
 from app.core.db import get_db
 from app.core.redis import get_redis
 
@@ -24,18 +25,34 @@ USERS = "users"
 
 
 class TokenResponse(BaseModel):
+    """The refresh token is never in the body: it travels only in an httpOnly cookie."""
+
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     expires_in: int = Field(description="Access token lifetime in seconds")
 
-    @classmethod
-    def from_pair(cls, pair: TokenPair) -> "TokenResponse":
-        return cls(access_token=pair.access_token, refresh_token=pair.refresh_token, expires_in=pair.expires_in)
+
+def _token_response(response: Response, pair: TokenPair, settings: Settings) -> TokenResponse:
+    response.set_cookie(
+        settings.refresh_cookie_name,
+        pair.refresh_token,
+        max_age=settings.refresh_token_ttl_seconds,
+        path=settings.refresh_cookie_path,
+        secure=settings.refresh_cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
+    return TokenResponse(access_token=pair.access_token, expires_in=pair.expires_in)
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str = Field(min_length=1, max_length=256)
+def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        settings.refresh_cookie_name,
+        path=settings.refresh_cookie_path,
+        secure=settings.refresh_cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
 
 
 class Me(BaseModel):
@@ -45,11 +62,12 @@ class Me(BaseModel):
 @router.post("/login", response_model=TokenResponse)
 async def login(
     request: Request,
+    response: Response,
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Annotated[AsyncDatabase, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    """OAuth2 password flow: ``username`` is the email."""
+    """OAuth2 password flow (``username`` is the email). Sets the refresh token cookie."""
     user = await db[USERS].find_one({"email": form.username.strip().lower()}, {"passwordHash": 1})
     if not verify_password(form.password, user.get("passwordHash") if user else None):
         raise HTTPException(
@@ -57,33 +75,39 @@ async def login(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    pair = await issue_tokens(redis, str(user["_id"]), request.app.state.settings)
-    return TokenResponse.from_pair(pair)
+    settings = request.app.state.settings
+    pair = await issue_tokens(redis, str(user["_id"]), settings)
+    return _token_response(response, pair, settings)
 
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
     request: Request,
-    body: RefreshRequest,
+    response: Response,
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    """Exchange a refresh token for a new pair. The old refresh token stops working (rotation)."""
-    grant = await consume_refresh_token(redis, body.refresh_token)
+    """Exchange the refresh token cookie for a new access token and a new cookie (rotation)."""
+    settings = request.app.state.settings
+    token = request.cookies.get(settings.refresh_cookie_name)
+    grant = await consume_refresh_token(redis, token) if token and len(token) <= 256 else None
     if grant is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-    pair = await issue_tokens(redis, grant.user_id, request.app.state.settings, session_id=grant.session_id)
-    return TokenResponse.from_pair(pair)
+    pair = await issue_tokens(redis, grant.user_id, settings, session_id=grant.session_id)
+    return _token_response(response, pair, settings)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
+    request: Request,
     claims: CurrentUser,
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> Response:
     """End the session: its refresh token stops working and the access token is denied until it expires."""
     await revoke_session(redis, claims.session_id)
     await deny_access_token(redis, claims)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    _clear_refresh_cookie(response, request.app.state.settings)
+    return response
 
 
 @router.get("/me", response_model=Me)
