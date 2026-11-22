@@ -6,6 +6,10 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "pydantic[email]>=2.9",
+    "pydantic-settings>=2.6",
+    "pymongo>=4.10",
+    "redis>=5.2",
+    "prometheus-client>=0.21",
     "uvicorn[standard]>=0.30",
 ]
 
