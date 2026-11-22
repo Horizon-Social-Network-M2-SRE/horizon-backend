@@ -8,6 +8,7 @@ from app.auth.security import hash_password
 from app.auth.tokens import DENY_PREFIX, SESSION_PREFIX, create_access_token
 
 EMAIL, PASSWORD = "ada@example.com", "correct horse battery"
+COOKIE = "refresh_token"
 
 
 @pytest.fixture
@@ -28,18 +29,35 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _refresh(client, cookie=None):
+    """Refresh with the browser's cookie jar, or with an explicit (e.g. stolen or old) cookie."""
+    headers = {"Cookie": f"{COOKIE}={cookie}"} if cookie else None
+    return client.post("/auth/refresh", headers=headers)
+
+
 # ---------- login ----------
 
 
-def test_login_returns_access_and_refresh_tokens(services_client, user_id):
+def test_login_returns_access_token_and_sets_refresh_cookie(services_client, user_id):
     response = _login(services_client)
     assert response.status_code == 200
     body = response.json()
+    assert set(body) == {"access_token", "token_type", "expires_in"}  # no refresh token in JS reach
     assert body["token_type"] == "bearer"
     assert body["expires_in"] == 15 * 60
-    assert body["refresh_token"]
+    assert response.cookies.get(COOKIE)
     me = services_client.get("/auth/me", headers=_auth(body["access_token"]))
     assert me.json() == {"id": user_id}
+
+
+def test_refresh_cookie_attributes(services_client, user_id):
+    header = _login(services_client).headers["set-cookie"]
+    attrs = {a.strip().split("=")[0].lower(): a.strip() for a in header.split(";")}
+    assert "httponly" in attrs
+    assert "secure" in attrs
+    assert attrs["samesite"].lower() == "samesite=strict"
+    assert attrs["path"] == "Path=/auth"
+    assert attrs["max-age"] == f"Max-Age={7 * 24 * 3600}"
 
 
 def test_login_email_is_case_insensitive(services_client, user_id):
@@ -51,6 +69,7 @@ def test_login_rejects_bad_credentials_with_same_error(services_client, user_id,
     response = _login(services_client, username, password)
     assert response.status_code == 401
     assert response.json() == {"detail": "Incorrect email or password"}
+    assert COOKIE not in response.cookies
 
 
 def test_login_requires_form_fields(services_client):
@@ -80,90 +99,89 @@ def test_tampered_access_token_refused(services_client, user_id):
 # ---------- refresh ----------
 
 
-def test_refresh_issues_new_pair_and_rotates(services_client, user_id):
-    first = _login(services_client).json()
-    response = services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+def test_refresh_uses_the_cookie_and_rotates_it(services_client, user_id):
+    first = _login(services_client)
+    old_cookie = first.cookies[COOKIE]
+
+    response = _refresh(services_client)  # browser sends the cookie by itself
     assert response.status_code == 200
-    second = response.json()
-    assert second["refresh_token"] != first["refresh_token"]
-    assert services_client.get("/auth/me", headers=_auth(second["access_token"])).json() == {"id": user_id}
+    assert response.cookies[COOKIE] != old_cookie
+    new_access = response.json()["access_token"]
+    assert services_client.get("/auth/me", headers=_auth(new_access)).json() == {"id": user_id}
 
-    reused = services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
-    assert reused.status_code == 401  # single use
+    assert _refresh(services_client, cookie=old_cookie).status_code == 401  # single use
 
 
-def test_refresh_rejects_unknown_token(services_client):
-    assert services_client.post("/auth/refresh", json={"refresh_token": "nope"}).status_code == 401
+def test_refresh_without_cookie_rejected(services_client):
+    assert services_client.post("/auth/refresh").status_code == 401
+
+
+def test_refresh_rejects_unknown_or_oversized_cookie(services_client):
+    assert _refresh(services_client, cookie="nope").status_code == 401
+    assert _refresh(services_client, cookie="x" * 300).status_code == 401
 
 
 def test_refresh_token_is_stored_hashed_with_ttl(services_client, user_id):
-    tokens = _login(services_client).json()
+    cookie = _login(services_client).cookies[COOKIE]
     redis, portal = services_client.app.state.redis, services_client.portal
     keys = portal.call(redis.keys, "auth:refresh:*")
     assert len(keys) == 1
-    assert tokens["refresh_token"] not in keys[0]
+    assert cookie not in keys[0]
     assert 0 < portal.call(redis.ttl, keys[0]) <= 7 * 24 * 3600
+
+
+def test_refresh_keeps_the_session(services_client, user_id):
+    _login(services_client)
+    _refresh(services_client)
+    redis, portal = services_client.app.state.redis, services_client.portal
+    assert len(portal.call(redis.keys, SESSION_PREFIX + "*")) == 1
+    assert len(portal.call(redis.keys, "auth:refresh:*")) == 1  # the used token is gone
 
 
 # ---------- logout ----------
 
 
 def test_signed_out_access_token_is_refused(services_client, user_id):
-    tokens = _login(services_client).json()
-    headers = _auth(tokens["access_token"])
+    access = _login(services_client).json()["access_token"]
+    headers = _auth(access)
     assert services_client.get("/auth/me", headers=headers).status_code == 200
 
-    response = services_client.post("/auth/logout", headers=headers, json={"refresh_token": tokens["refresh_token"]})
-    assert response.status_code == 204
+    assert services_client.post("/auth/logout", headers=headers).status_code == 204
 
     assert services_client.get("/auth/me", headers=headers).status_code == 401
     assert services_client.post("/auth/logout", headers=headers).status_code == 401
 
 
-def test_logout_deletes_refresh_token(services_client, user_id):
-    tokens = _login(services_client).json()
-    services_client.post(
-        "/auth/logout", headers=_auth(tokens["access_token"]), json={"refresh_token": tokens["refresh_token"]}
-    )
-    response = services_client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
-    assert response.status_code == 401
+def test_logout_revokes_refresh_token_and_clears_cookie(services_client, user_id):
+    login = _login(services_client)
+    cookie = login.cookies[COOKIE]
+    response = services_client.post("/auth/logout", headers=_auth(login.json()["access_token"]))
+    assert 'refresh_token=""' in response.headers["set-cookie"] or "Max-Age=0" in response.headers["set-cookie"]
+    assert COOKIE not in services_client.cookies
+    # Even a client that kept a copy of the cookie cannot get a new access token.
+    assert _refresh(services_client, cookie=cookie).status_code == 401
+
+
+def test_logout_after_refresh_revokes_the_rotated_token(services_client, user_id):
+    first_access = _login(services_client).json()["access_token"]
+    rotated = _refresh(services_client).cookies[COOKIE]
+    # Sign out with the *old* access token: same session, so the rotated refresh token dies too.
+    services_client.post("/auth/logout", headers=_auth(first_access))
+    assert _refresh(services_client, cookie=rotated).status_code == 401
 
 
 def test_deny_list_entry_lives_only_until_token_expiry(services_client, user_id):
-    tokens = _login(services_client).json()
-    services_client.post("/auth/logout", headers=_auth(tokens["access_token"]))
+    access = _login(services_client).json()["access_token"]
+    services_client.post("/auth/logout", headers=_auth(access))
     redis, portal = services_client.app.state.redis, services_client.portal
     (key,) = portal.call(redis.keys, DENY_PREFIX + "*")
     assert 0 < portal.call(redis.ttl, key) <= 15 * 60
 
 
 def test_logout_only_signs_out_that_session(services_client, user_id):
-    a = _login(services_client).json()
-    b = _login(services_client).json()
-    services_client.post("/auth/logout", headers=_auth(a["access_token"]), json={"refresh_token": a["refresh_token"]})
-    assert services_client.get("/auth/me", headers=_auth(b["access_token"])).status_code == 200
-    assert services_client.post("/auth/refresh", json={"refresh_token": b["refresh_token"]}).status_code == 200
-
-
-def test_logout_without_body_still_revokes_refresh_token(services_client, user_id):
-    tokens = _login(services_client).json()
-    assert services_client.post("/auth/logout", headers=_auth(tokens["access_token"])).status_code == 204
-    response = services_client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
-    assert response.status_code == 401
-
-
-def test_logout_after_refresh_revokes_the_rotated_token(services_client, user_id):
-    first = _login(services_client).json()
-    second = services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]}).json()
-    # Sign out with the *old* access token: same session, so the new refresh token dies too.
-    services_client.post("/auth/logout", headers=_auth(first["access_token"]))
-    response = services_client.post("/auth/refresh", json={"refresh_token": second["refresh_token"]})
-    assert response.status_code == 401
-
-
-def test_refresh_keeps_the_session(services_client, user_id):
-    first = _login(services_client).json()
-    services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
-    redis, portal = services_client.app.state.redis, services_client.portal
-    assert len(portal.call(redis.keys, SESSION_PREFIX + "*")) == 1
-    assert len(portal.call(redis.keys, "auth:refresh:*")) == 1  # the used token is gone
+    a = _login(services_client)
+    b = _login(services_client)
+    b_cookie = b.cookies[COOKIE]
+    services_client.post("/auth/logout", headers=_auth(a.json()["access_token"]))
+    assert services_client.get("/auth/me", headers=_auth(b.json()["access_token"])).status_code == 200
+    assert _refresh(services_client, cookie=b_cookie).status_code == 200

@@ -22,6 +22,7 @@ def settings():
         mongodb_db=f"horizon_test_{uuid.uuid4().hex[:12]}",
         redis_url=TEST_REDIS_URL,
         jwt_secret=os.environ["JWT_SECRET"],
+        refresh_cookie_path="/auth",  # no /api prefix: tests call the app directly
     )
 
 
@@ -32,7 +33,8 @@ def app(settings):
 
 @pytest.fixture
 def client(app):
-    with TestClient(app) as c:
+    # https so the Secure refresh cookie is stored and sent like in a browser.
+    with TestClient(app, base_url="https://testserver") as c:
         yield c
 
 

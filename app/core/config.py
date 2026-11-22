@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     access_token_ttl_seconds: int = 15 * 60
     refresh_token_ttl_seconds: int = 7 * 24 * 3600
 
+    # Refresh token cookie (plan v6, section 6). The path is the one the browser sees:
+    # /api/auth behind Traefik. Set REFRESH_COOKIE_PATH=/auth when calling the API directly.
+    refresh_cookie_name: str = "refresh_token"
+    refresh_cookie_path: str = "/api/auth"
+    refresh_cookie_secure: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:
