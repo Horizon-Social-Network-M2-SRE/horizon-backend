@@ -185,3 +185,34 @@ def test_logout_only_signs_out_that_session(services_client, user_id):
     services_client.post("/auth/logout", headers=_auth(a.json()["access_token"]))
     assert services_client.get("/auth/me", headers=_auth(b.json()["access_token"])).status_code == 200
     assert _refresh(services_client, cookie=b_cookie).status_code == 200
+
+
+# ---------- metrics ----------
+
+
+def _count(client, name, result):
+    for line in client.get("/metrics").text.splitlines():
+        if line.startswith(f'{name}{{result="{result}"}}'):
+            return float(line.split()[-1])
+    raise AssertionError(f"{name}{{result={result}}} not exported")
+
+
+def test_login_and_refresh_are_counted(services_client, user_id):
+    before = {
+        (n, r): _count(services_client, n, r)
+        for n in ("auth_login_total", "auth_refresh_total")
+        for r in ("success", "failure")
+    }
+    _login(services_client)
+    _login(services_client, password="wrong")
+    _login(services_client, password="wrong")
+    _refresh(services_client)
+    _refresh(services_client, cookie="nope")
+
+    def delta(n, r):
+        return _count(services_client, n, r) - before[(n, r)]
+
+    assert delta("auth_login_total", "success") == 1
+    assert delta("auth_login_total", "failure") == 2
+    assert delta("auth_refresh_total", "success") == 1
+    assert delta("auth_refresh_total", "failure") == 1
