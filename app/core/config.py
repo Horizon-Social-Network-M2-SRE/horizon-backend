@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,8 +14,10 @@ class Settings(BaseSettings):
     mongodb_db: str = "horizon"
     redis_url: str = "redis://localhost:6379/0"
 
-    # Auth. JWT_SECRET must be set to a long random value outside local development.
-    jwt_secret: str = "dev-only-change-me-0123456789abcdef0123456789abcdef"
+    # Auth. No default on purpose: the repository is public, so a built-in secret would let
+    # anyone forge tokens. The app refuses to start without JWT_SECRET (>= 32 chars).
+    # Generate one with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+    jwt_secret: SecretStr = Field(min_length=32)
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 15 * 60
     refresh_token_ttl_seconds: int = 7 * 24 * 3600

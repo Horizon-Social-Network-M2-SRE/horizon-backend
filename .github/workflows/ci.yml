@@ -44,12 +44,18 @@ jobs:
         run: docker build -t horizon-backend:ci .
       - name: Health answers in the container
         run: |
-          docker run -d --name api -p 8000:8000 horizon-backend:ci
+          docker run -d --name api -p 8000:8000 \
+            -e JWT_SECRET="$(openssl rand -hex 32)" horizon-backend:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8000/health; then echo; exit 0; fi
             sleep 1
           done
           docker logs api
           exit 1
+      - name: Refuses to start without JWT_SECRET
+        run: |
+          if docker run --rm horizon-backend:ci python -c "import app.main"; then
+            echo "app started without JWT_SECRET"; exit 1
+          fi
       - name: Runs as non-root
         run: test "$(docker exec api id -u)" != "0"
