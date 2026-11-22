@@ -50,14 +50,14 @@ def create_access_token(user_id: str, settings: Settings, now: float | None = No
         "exp": issued + settings.access_token_ttl_seconds,
         "type": "access",
     }
-    return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return jwt.encode(claims, settings.jwt_secret.get_secret_value(), algorithm=settings.jwt_algorithm)
 
 
 def decode_access_token(token: str, settings: Settings) -> AccessClaims:
     try:
         claims = jwt.decode(
             token,
-            settings.jwt_secret,
+            settings.jwt_secret.get_secret_value(),
             algorithms=[settings.jwt_algorithm],
             options={"require": ["sub", "jti", "exp", "iat"]},
         )

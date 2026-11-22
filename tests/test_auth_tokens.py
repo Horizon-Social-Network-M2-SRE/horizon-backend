@@ -39,7 +39,7 @@ def test_wrong_secret_rejected():
 def test_non_access_token_rejected(claims):
     now = int(time.time())
     token = jwt.encode(
-        {"sub": "u1", "jti": "j", "iat": now, "exp": now + 60, **claims}, SETTINGS.jwt_secret, algorithm="HS256"
+        {"sub": "u1", "jti": "j", "iat": now, "exp": now + 60, **claims}, SETTINGS.jwt_secret.get_secret_value(), algorithm="HS256"
     )
     with pytest.raises(InvalidTokenError):
         decode_access_token(token, SETTINGS)
