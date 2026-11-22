@@ -49,3 +49,19 @@ docker run -p 8000:8000 -e MONGODB_URI=... -e REDIS_URL=... horizon-backend
 ```
 
 Multi-stage image, runs as uid 10001. CI builds it and checks `/health` answers.
+
+## Auth
+
+| Endpoint             | Body                                     | Result                                   |
+|----------------------|------------------------------------------|------------------------------------------|
+| `POST /auth/login`   | form `username` (email), `password`      | `access_token` (JWT, 15 min), `refresh_token` |
+| `POST /auth/refresh` | `{"refresh_token": ...}`                 | new pair; the old refresh token stops working |
+| `POST /auth/logout`  | bearer token, optional `{"refresh_token"}` | `204`; the access token is refused until it expires |
+| `GET /auth/me`       | bearer token                             | `{"id": ...}`                            |
+
+- Users are read from the `users` collection: lowercase `email`, argon2 `passwordHash`
+  (`app/auth/security.py`, shared with register).
+- Refresh tokens are opaque and stored hashed in Redis (`auth:refresh:<sha256>`) with a 7-day TTL.
+- Logout writes `auth:deny:<jti>` with a TTL equal to the token's remaining lifetime.
+- Protect a route with `claims: CurrentUser` from `app.auth.deps`.
+- Set `JWT_SECRET` to a long random value in every deployed environment.
