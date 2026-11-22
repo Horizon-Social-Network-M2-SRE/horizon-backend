@@ -5,7 +5,7 @@ from bson import ObjectId
 
 from app.auth.router import USERS
 from app.auth.security import hash_password
-from app.auth.tokens import DENY_PREFIX, create_access_token
+from app.auth.tokens import DENY_PREFIX, SESSION_PREFIX, create_access_token
 
 EMAIL, PASSWORD = "ada@example.com", "correct horse battery"
 
@@ -66,7 +66,7 @@ def test_me_requires_a_token(services_client):
 
 def test_expired_access_token_refused(services_client, user_id):
     settings = services_client.app.state.settings
-    token = create_access_token(user_id, settings, now=time.time() - settings.access_token_ttl_seconds - 1)
+    token = create_access_token(user_id, "s1", settings, now=time.time() - settings.access_token_ttl_seconds - 1)
     assert services_client.get("/auth/me", headers=_auth(token)).status_code == 401
 
 
@@ -145,8 +145,25 @@ def test_logout_only_signs_out_that_session(services_client, user_id):
     assert services_client.post("/auth/refresh", json={"refresh_token": b["refresh_token"]}).status_code == 200
 
 
-def test_logout_cannot_revoke_another_users_refresh_token(services_client, user_id):
-    victim = _login(services_client).json()
-    other_token = create_access_token(str(ObjectId()), services_client.app.state.settings)
-    services_client.post("/auth/logout", headers=_auth(other_token), json={"refresh_token": victim["refresh_token"]})
-    assert services_client.post("/auth/refresh", json={"refresh_token": victim["refresh_token"]}).status_code == 200
+def test_logout_without_body_still_revokes_refresh_token(services_client, user_id):
+    tokens = _login(services_client).json()
+    assert services_client.post("/auth/logout", headers=_auth(tokens["access_token"])).status_code == 204
+    response = services_client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert response.status_code == 401
+
+
+def test_logout_after_refresh_revokes_the_rotated_token(services_client, user_id):
+    first = _login(services_client).json()
+    second = services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]}).json()
+    # Sign out with the *old* access token: same session, so the new refresh token dies too.
+    services_client.post("/auth/logout", headers=_auth(first["access_token"]))
+    response = services_client.post("/auth/refresh", json={"refresh_token": second["refresh_token"]})
+    assert response.status_code == 401
+
+
+def test_refresh_keeps_the_session(services_client, user_id):
+    first = _login(services_client).json()
+    services_client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+    redis, portal = services_client.app.state.redis, services_client.portal
+    assert len(portal.call(redis.keys, SESSION_PREFIX + "*")) == 1
+    assert len(portal.call(redis.keys, "auth:refresh:*")) == 1  # the used token is gone
