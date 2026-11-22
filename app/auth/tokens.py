@@ -1,11 +1,15 @@
-"""Access and refresh tokens.
+"""Access and refresh tokens, grouped in sessions.
 
-- Access token: short-lived JWT (``sub``, ``jti``, ``iat``, ``exp``, ``type=access``).
+- Session: created at login, identified by ``sid``. It survives refresh rotation and
+  ends at logout. Redis keeps ``auth:session:<sid>`` -> hash of its current refresh token.
+- Access token: short-lived JWT (``sub``, ``sid``, ``jti``, ``iat``, ``exp``, ``type=access``).
   Signed-out tokens are refused through a Redis deny list keyed by ``jti``,
   kept only until the token would have expired anyway.
 - Refresh token: opaque random string. Redis stores only its SHA-256 under
-  ``auth:refresh:<hash>`` -> user id, with the refresh TTL. It is single-use:
-  refreshing deletes it atomically (GETDEL) and issues a new pair.
+  ``auth:refresh:<hash>`` -> ``<user id>:<sid>``, with the refresh TTL. It is
+  single-use: refreshing deletes it atomically (GETDEL) and issues a new pair in
+  the same session. Logout revokes the session's refresh token through ``sid``,
+  so the client does not need to send it.
 """
 
 import hashlib
@@ -21,6 +25,7 @@ from app.core.config import Settings
 
 DENY_PREFIX = "auth:deny:"
 REFRESH_PREFIX = "auth:refresh:"
+SESSION_PREFIX = "auth:session:"
 
 
 class InvalidTokenError(Exception):
@@ -30,6 +35,7 @@ class InvalidTokenError(Exception):
 @dataclass(frozen=True)
 class AccessClaims:
     user_id: str
+    session_id: str
     jti: str
     exp: int
 
@@ -41,10 +47,17 @@ class TokenPair:
     expires_in: int
 
 
-def create_access_token(user_id: str, settings: Settings, now: float | None = None) -> str:
+@dataclass(frozen=True)
+class RefreshGrant:
+    user_id: str
+    session_id: str
+
+
+def create_access_token(user_id: str, session_id: str, settings: Settings, now: float | None = None) -> str:
     issued = int(now if now is not None else time.time())
     claims = {
         "sub": user_id,
+        "sid": session_id,
         "jti": uuid.uuid4().hex,
         "iat": issued,
         "exp": issued + settings.access_token_ttl_seconds,
@@ -59,39 +72,54 @@ def decode_access_token(token: str, settings: Settings) -> AccessClaims:
             token,
             settings.jwt_secret.get_secret_value(),
             algorithms=[settings.jwt_algorithm],
-            options={"require": ["sub", "jti", "exp", "iat"]},
+            options={"require": ["sub", "sid", "jti", "exp", "iat"]},
         )
     except jwt.PyJWTError as exc:
         raise InvalidTokenError(str(exc)) from exc
     if claims.get("type") != "access":
         raise InvalidTokenError("not an access token")
-    return AccessClaims(user_id=str(claims["sub"]), jti=str(claims["jti"]), exp=int(claims["exp"]))
+    return AccessClaims(
+        user_id=str(claims["sub"]), session_id=str(claims["sid"]), jti=str(claims["jti"]), exp=int(claims["exp"])
+    )
 
 
-def _refresh_key(refresh_token: str) -> str:
-    return REFRESH_PREFIX + hashlib.sha256(refresh_token.encode()).hexdigest()
+def _hash(refresh_token: str) -> str:
+    return hashlib.sha256(refresh_token.encode()).hexdigest()
 
 
-async def issue_tokens(redis: Redis, user_id: str, settings: Settings) -> TokenPair:
+async def issue_tokens(
+    redis: Redis, user_id: str, settings: Settings, session_id: str | None = None
+) -> TokenPair:
+    """New pair. Without ``session_id`` a new session starts (login); with it, the session continues (refresh)."""
+    session_id = session_id or uuid.uuid4().hex
     refresh_token = secrets.token_urlsafe(48)
-    await redis.set(_refresh_key(refresh_token), user_id, ex=settings.refresh_token_ttl_seconds)
+    digest = _hash(refresh_token)
+    ttl = settings.refresh_token_ttl_seconds
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.set(REFRESH_PREFIX + digest, f"{user_id}:{session_id}", ex=ttl)
+        pipe.set(SESSION_PREFIX + session_id, digest, ex=ttl)
+        await pipe.execute()
     return TokenPair(
-        access_token=create_access_token(user_id, settings),
+        access_token=create_access_token(user_id, session_id, settings),
         refresh_token=refresh_token,
         expires_in=settings.access_token_ttl_seconds,
     )
 
 
-async def consume_refresh_token(redis: Redis, refresh_token: str) -> str | None:
-    """Delete the refresh token and return its user id, or None if unknown/expired/used."""
-    return await redis.getdel(_refresh_key(refresh_token))
+async def consume_refresh_token(redis: Redis, refresh_token: str) -> RefreshGrant | None:
+    """Delete the refresh token and return its owner, or None if unknown, expired, used or revoked."""
+    value = await redis.getdel(REFRESH_PREFIX + _hash(refresh_token))
+    if value is None:
+        return None
+    user_id, _, session_id = value.partition(":")
+    return RefreshGrant(user_id=user_id, session_id=session_id)
 
 
-async def revoke_refresh_token(redis: Redis, refresh_token: str, user_id: str) -> None:
-    """Delete the refresh token if it belongs to ``user_id`` (others' tokens are left alone)."""
-    key = _refresh_key(refresh_token)
-    if await redis.get(key) == user_id:
-        await redis.delete(key)
+async def revoke_session(redis: Redis, session_id: str) -> None:
+    """End the session: its current refresh token stops working."""
+    digest = await redis.getdel(SESSION_PREFIX + session_id)
+    if digest:
+        await redis.delete(REFRESH_PREFIX + digest)
 
 
 async def deny_access_token(redis: Redis, claims: AccessClaims, now: float | None = None) -> None:

@@ -13,7 +13,7 @@ from app.auth.tokens import (
     consume_refresh_token,
     deny_access_token,
     issue_tokens,
-    revoke_refresh_token,
+    revoke_session,
 )
 from app.core.db import get_db
 from app.core.redis import get_redis
@@ -36,10 +36,6 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1, max_length=256)
-
-
-class LogoutRequest(BaseModel):
-    refresh_token: str | None = Field(default=None, max_length=256)
 
 
 class Me(BaseModel):
@@ -72,10 +68,10 @@ async def refresh(
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
     """Exchange a refresh token for a new pair. The old refresh token stops working (rotation)."""
-    user_id = await consume_refresh_token(redis, body.refresh_token)
-    if user_id is None:
+    grant = await consume_refresh_token(redis, body.refresh_token)
+    if grant is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-    pair = await issue_tokens(redis, user_id, request.app.state.settings)
+    pair = await issue_tokens(redis, grant.user_id, request.app.state.settings, session_id=grant.session_id)
     return TokenResponse.from_pair(pair)
 
 
@@ -83,11 +79,9 @@ async def refresh(
 async def logout(
     claims: CurrentUser,
     redis: Annotated[Redis, Depends(get_redis)],
-    body: LogoutRequest | None = None,
 ) -> Response:
-    """Deny the current access token until it expires and delete the given refresh token."""
-    if body and body.refresh_token:
-        await revoke_refresh_token(redis, body.refresh_token, claims.user_id)
+    """End the session: its refresh token stops working and the access token is denied until it expires."""
+    await revoke_session(redis, claims.session_id)
     await deny_access_token(redis, claims)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
