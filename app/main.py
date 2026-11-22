@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.core.config import Settings, get_settings
 from app.core.db import create_mongo_client
 from app.core.health import router as health_router
+from app.core.metrics import setup_metrics
 from app.core.redis import create_redis
 from app.modules import MODULE_ROUTERS
 
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in MODULE_ROUTERS:
         app.include_router(router)
     app.state.module_routers = MODULE_ROUTERS
+    setup_metrics(app)
     return app
 
 
