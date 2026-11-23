@@ -27,6 +27,7 @@ jobs:
     env:
       TEST_MONGODB_URI: mongodb://localhost:27017
       TEST_REDIS_URL: redis://localhost:6379/15
+      REQUIRE_SERVICES: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
