@@ -27,6 +27,14 @@ def test_ready_returns_503_when_a_dependency_is_down(client, broken):
     assert body["checks"]["mongodb" if broken == "db" else "redis"] == "down"
 
 
+def test_failed_readiness_check_is_logged(client, caplog):
+    client.app.state.redis = _Down()
+    with caplog.at_level("WARNING", logger="app.core.health"):
+        client.get("/health/ready")
+    assert "readiness check failed for redis" in caplog.text
+    assert "redis down" in caplog.text
+
+
 def test_ready_with_real_services(services_client):
     response = services_client.get("/health/ready")
     assert response.json() == {"status": "ok", "checks": {"mongodb": "ok", "redis": "ok"}}
