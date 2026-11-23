@@ -10,7 +10,7 @@ app/
   modules.py       registry of feature module routers
   core/            config, db (AsyncMongoClient), redis, health, metrics
   auth/ users/ connections/ posts/ feed/ interactions/   one package per module, router under /<module>
-tests/             one test per module, health, metrics
+tests/             module mounting (one case per module), health, metrics, auth
 ```
 
 ## Development
