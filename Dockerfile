@@ -6,9 +6,13 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /src
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# Dependencies first, from pyproject.toml only: this layer is reused until they change,
+# so a code change does not reinstall everything.
 COPY pyproject.toml ./
+RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
+ && pip install -r requirements.txt
 COPY app ./app
-RUN pip install .
+RUN pip install --no-deps .
 
 # ---- runtime: only the virtualenv, non-root user ----
 FROM python:3.13-slim AS runtime
