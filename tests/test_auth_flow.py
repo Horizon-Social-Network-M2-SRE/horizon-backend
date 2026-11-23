@@ -170,6 +170,14 @@ def test_logout_after_refresh_revokes_the_rotated_token(services_client, user_id
     assert _refresh(services_client, cookie=rotated).status_code == 401
 
 
+def test_logout_refuses_every_access_token_of_the_session(services_client, user_id):
+    before_refresh = _login(services_client).json()["access_token"]
+    after_refresh = _refresh(services_client).json()["access_token"]
+    assert services_client.post("/auth/logout", headers=_auth(after_refresh)).status_code == 204
+    # The token from before the refresh is in the same session, so it is refused too.
+    assert services_client.get("/auth/me", headers=_auth(before_refresh)).status_code == 401
+
+
 def test_deny_list_entry_lives_only_until_token_expiry(services_client, user_id):
     access = _login(services_client).json()["access_token"]
     services_client.post("/auth/logout", headers=_auth(access))
