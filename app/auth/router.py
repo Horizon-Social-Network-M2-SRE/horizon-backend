@@ -1,3 +1,4 @@
+from contextlib import suppress
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -127,10 +128,8 @@ async def logout(
     settings = request.app.state.settings
     claims = None
     if token:
-        try:
+        with suppress(InvalidTokenError):  # expired or invalid: fall back to the cookie
             claims = decode_access_token(token, settings)
-        except InvalidTokenError:
-            pass
     if claims is not None:
         await revoke_session(redis, claims.session_id)
         await deny_access_token(redis, claims)
