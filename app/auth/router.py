@@ -48,6 +48,9 @@ def _token_response(response: Response, pair: TokenPair, settings: Settings) -> 
         httponly=True,
         samesite="strict",
     )
+    # Token responses must never be cached by a browser or proxy (RFC 6749, section 5.1).
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
     return TokenResponse(access_token=pair.access_token, expires_in=pair.expires_in)
 
 

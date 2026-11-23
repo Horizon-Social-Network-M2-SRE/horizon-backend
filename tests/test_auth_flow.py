@@ -67,6 +67,13 @@ def test_refresh_cookie_attributes(services_client, user_id):
     assert attrs["max-age"] == f"Max-Age={7 * 24 * 3600}"
 
 
+def test_token_responses_are_not_cacheable(services_client, user_id):
+    for response in (_login(services_client), _refresh(services_client)):
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
+
 def test_login_email_is_case_insensitive(services_client, user_id):
     assert _login(services_client, username="  ADA@Example.com ").status_code == 200
 
