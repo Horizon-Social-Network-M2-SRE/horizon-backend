@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from redis.asyncio import Redis
 
-from app.auth.tokens import AccessClaims, InvalidTokenError, decode_access_token, is_access_token_denied
+from app.auth.tokens import AccessClaims, InvalidTokenError, decode_access_token, is_access_token_revoked
 from app.core.redis import get_redis
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -26,7 +26,7 @@ async def get_access_claims(
         claims = decode_access_token(token, request.app.state.settings)
     except InvalidTokenError:
         raise _UNAUTHORIZED
-    if await is_access_token_denied(redis, claims.jti):
+    if await is_access_token_revoked(redis, claims):
         raise _UNAUTHORIZED
     return claims
 
