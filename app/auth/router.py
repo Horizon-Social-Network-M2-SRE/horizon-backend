@@ -15,6 +15,7 @@ from app.auth.tokens import (
     deny_access_token,
     issue_tokens,
     revoke_session,
+    rotate_tokens,
 )
 from app.core.config import Settings
 from app.core.db import get_db
@@ -93,10 +94,10 @@ async def refresh(
     settings = request.app.state.settings
     token = request.cookies.get(settings.refresh_cookie_name)
     grant = await consume_refresh_token(redis, token) if token and len(token) <= 256 else None
-    if grant is None:
+    pair = await rotate_tokens(redis, grant, settings) if grant else None
+    if pair is None:
         REFRESHES.labels("failure").inc()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-    pair = await issue_tokens(redis, grant.user_id, settings, session_id=grant.session_id)
     REFRESHES.labels("success").inc()
     return _token_response(response, pair, settings)
 
