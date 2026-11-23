@@ -14,7 +14,11 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str | None) -> bool:
+    # A missing or empty hash is checked against the dummy one (same timing) but never succeeds,
+    # even when the password happens to match the dummy.
+    has_hash = bool(password_hash)
     try:
-        return _hasher.verify(password_hash or _DUMMY_HASH, password) and password_hash is not None
+        matches = _hasher.verify(password_hash if has_hash else _DUMMY_HASH, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+    return matches and has_hash
