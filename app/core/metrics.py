@@ -5,6 +5,7 @@ latency histogram. S2-09 may replace this with prometheus-fastapi-instrumentator
 """
 
 import time
+from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -25,12 +26,18 @@ def setup_metrics(app: FastAPI) -> None:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.middleware("http")
-    async def _record(request: Request, call_next):
+    async def _record(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         start = time.perf_counter()
-        response = await call_next(request)
-        route = request.scope.get("route")
-        path = getattr(route, "path", None) or "unmatched"  # template, not raw path: bounded labels
-        if path not in _SKIP:
-            REQUESTS.labels(request.method, path, str(response.status_code)).inc()
-            LATENCY.labels(request.method, path).observe(time.perf_counter() - start)
-        return response
+        # An unhandled exception becomes a 500 for the client: count it as one, or the
+        # error-rate SLI would read 0% during an outage.
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            path = getattr(route, "path", None) or "unmatched"  # template, not raw path: bounded labels
+            if path not in _SKIP:
+                REQUESTS.labels(request.method, path, str(status_code)).inc()
+                LATENCY.labels(request.method, path).observe(time.perf_counter() - start)
