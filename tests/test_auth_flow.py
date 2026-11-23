@@ -5,7 +5,14 @@ from bson import ObjectId
 
 from app.auth.router import USERS
 from app.auth.security import hash_password
-from app.auth.tokens import DENY_PREFIX, SESSION_PREFIX, create_access_token
+from app.auth.tokens import (
+    DENY_PREFIX,
+    SESSION_PREFIX,
+    consume_refresh_token,
+    create_access_token,
+    revoke_session,
+    rotate_tokens,
+)
 
 EMAIL, PASSWORD = "ada@example.com", "correct horse battery"
 COOKIE = "refresh_token"
@@ -224,3 +231,15 @@ def test_login_and_refresh_are_counted(services_client, user_id):
     assert delta("auth_login_total", "failure") == 2
     assert delta("auth_refresh_total", "success") == 1
     assert delta("auth_refresh_total", "failure") == 1
+
+
+def test_refresh_racing_logout_does_not_revive_the_session(services_client, user_id):
+    """Refresh consumes its token, logout runs, then refresh tries to store the new pair."""
+    cookie = _login(services_client).cookies[COOKIE]
+    state, portal = services_client.app.state, services_client.portal
+
+    grant = portal.call(consume_refresh_token, state.redis, cookie)  # refresh, step 1
+    portal.call(revoke_session, state.redis, grant.session_id)  # logout in between
+    assert portal.call(rotate_tokens, state.redis, grant, state.settings) is None  # refresh, step 2
+
+    assert portal.call(state.redis.keys, "auth:*") == []
