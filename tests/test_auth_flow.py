@@ -79,6 +79,27 @@ def test_login_rejects_bad_credentials_with_same_error(services_client, user_id,
     assert COOKIE not in response.cookies
 
 
+def test_password_check_runs_off_the_event_loop(services_client, user_id, monkeypatch):
+    import asyncio
+
+    from app.auth import router as auth_router
+
+    seen = {}
+    real_verify = auth_router.verify_password
+
+    def spy(password, password_hash):
+        try:
+            asyncio.get_running_loop()
+            seen["in_event_loop"] = True
+        except RuntimeError:
+            seen["in_event_loop"] = False
+        return real_verify(password, password_hash)
+
+    monkeypatch.setattr(auth_router, "verify_password", spy)
+    assert _login(services_client).status_code == 200
+    assert seen == {"in_event_loop": False}
+
+
 def test_login_requires_form_fields(services_client):
     assert services_client.post("/auth/login", data={"username": EMAIL}).status_code == 422
 
