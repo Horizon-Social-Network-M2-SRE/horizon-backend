@@ -3,7 +3,7 @@
 - Session: created at login, identified by ``sid``. It survives refresh rotation and
   ends at logout. Redis keeps ``auth:session:<sid>`` -> hash of its current refresh token.
 - Access token: short-lived JWT (``sub``, ``sid``, ``jti``, ``iat``, ``exp``, ``type=access``).
-  Signed-out tokens are refused through a Redis deny list keyed by ``jti``,
+  Refused once its session has ended (logout), or through a Redis deny list keyed by ``jti``,
   kept only until the token would have expired anyway.
 - Refresh token: opaque random string. Redis stores only its SHA-256 under
   ``auth:refresh:<hash>`` -> ``<user id>:<sid>``, with the refresh TTL. It is
@@ -128,5 +128,14 @@ async def deny_access_token(redis: Redis, claims: AccessClaims, now: float | Non
         await redis.set(DENY_PREFIX + claims.jti, "1", ex=remaining)
 
 
-async def is_access_token_denied(redis: Redis, jti: str) -> bool:
-    return bool(await redis.exists(DENY_PREFIX + jti))
+async def is_access_token_revoked(redis: Redis, claims: AccessClaims) -> bool:
+    """True if the token was signed out, or its session has ended.
+
+    Checking the session covers every access token issued in it (including the ones from
+    before the last refresh), not only the one sent with the logout. One round trip.
+    """
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.exists(DENY_PREFIX + claims.jti)
+        pipe.exists(SESSION_PREFIX + claims.session_id)
+        denied, session_alive = await pipe.execute()
+    return bool(denied) or not session_alive
