@@ -8,6 +8,8 @@ from app.auth.tokens import AccessClaims, InvalidTokenError, decode_access_token
 from app.core.redis import get_redis
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# Same scheme, but the token may be missing (logout also works from the refresh cookie).
+optional_bearer_token = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,

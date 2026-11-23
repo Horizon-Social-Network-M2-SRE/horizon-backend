@@ -6,16 +6,19 @@ from pydantic import BaseModel, Field
 from pymongo.asynchronous.database import AsyncDatabase
 from redis.asyncio import Redis
 
-from app.auth.deps import CurrentUser
+from app.auth.deps import CurrentUser, optional_bearer_token
 from app.auth.metrics import LOGINS, REFRESHES
 from app.auth.security import verify_password
 from app.auth.tokens import (
+    InvalidTokenError,
     TokenPair,
     consume_refresh_token,
+    decode_access_token,
     deny_access_token,
     issue_tokens,
     revoke_session,
     rotate_tokens,
+    session_of_refresh_token,
 )
 from app.core.config import Settings
 from app.core.db import get_db
@@ -105,14 +108,32 @@ async def refresh(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request,
-    claims: CurrentUser,
+    token: Annotated[str | None, Depends(optional_bearer_token)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> Response:
-    """End the session: its refresh token stops working and the access token is denied until it expires."""
-    await revoke_session(redis, claims.session_id)
-    await deny_access_token(redis, claims)
+    """End the session: its refresh token stops working and its access tokens are refused.
+
+    The session is found from the access token, or, only when that is missing or no longer
+    valid, from the refresh token cookie (a user coming back after 15 minutes can still sign out).
+    Always clears the cookie and answers 204, so signing out twice is harmless.
+    """
+    settings = request.app.state.settings
+    claims = None
+    if token:
+        try:
+            claims = decode_access_token(token, settings)
+        except InvalidTokenError:
+            pass
+    if claims is not None:
+        await revoke_session(redis, claims.session_id)
+        await deny_access_token(redis, claims)
+    else:
+        cookie = request.cookies.get(settings.refresh_cookie_name)
+        session_id = await session_of_refresh_token(redis, cookie) if cookie and len(cookie) <= 256 else None
+        if session_id:
+            await revoke_session(redis, session_id)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    _clear_refresh_cookie(response, request.app.state.settings)
+    _clear_refresh_cookie(response, settings)
     return response
 
 
