@@ -10,6 +10,7 @@ app/
   modules.py       registry of feature module routers
   core/            config, db (AsyncMongoClient), redis, health, metrics
   auth/ users/ connections/ posts/ feed/ interactions/   one package per module, router under /<module>
+  models/          shared Pydantic models (profile)
 tests/             module mounting (one case per module), health, metrics, auth
 ```
 
@@ -40,6 +41,18 @@ docker run -d --rm --name horizon-mongo-test -p 127.0.0.1:27018:27017 mongo:7
 docker run -d --rm --name horizon-redis-test -p 127.0.0.1:6380:6379 redis:7
 TEST_MONGODB_URI=mongodb://localhost:27018 TEST_REDIS_URL=redis://localhost:6380/15 .venv/bin/pytest
 ```
+
+## Profiles
+
+`app/models/profile.py` defines the user profile, discriminated by `userType`:
+
+| userType | required type-specific field |
+|----------|------------------------------|
+| student  | `major`                      |
+| staff    | `adminRole`                  |
+| teacher  | `speciality`                 |
+
+Fields belonging to another user type are rejected. Use `parse_profile(payload)` to validate.
 
 ## Container
 
