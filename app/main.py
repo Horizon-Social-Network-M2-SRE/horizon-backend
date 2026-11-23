@@ -32,7 +32,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     for router in MODULE_ROUTERS:
         app.include_router(router)
-    app.state.module_routers = MODULE_ROUTERS
     setup_metrics(app)
     return app
 
