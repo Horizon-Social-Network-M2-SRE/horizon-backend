@@ -18,6 +18,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from typing import cast
 
 import jwt
 from redis.asyncio import Redis
@@ -154,7 +155,7 @@ async def consume_refresh_token(redis: Redis, refresh_token: str) -> RefreshGran
 
 async def session_of_refresh_token(redis: Redis, refresh_token: str) -> str | None:
     """The session a refresh token belongs to, without consuming it."""
-    value = await redis.get(REFRESH_PREFIX + _hash(refresh_token))
+    value = cast(str | None, await redis.get(REFRESH_PREFIX + _hash(refresh_token)))  # decode_responses=True
     return value.partition(":")[2] if value else None
 
 
