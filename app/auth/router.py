@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from pymongo.asynchronous.database import AsyncDatabase
@@ -74,7 +75,10 @@ async def login(
 ) -> TokenResponse:
     """OAuth2 password flow (``username`` is the email). Sets the refresh token cookie."""
     user = await db[USERS].find_one({"email": form.username.strip().lower()}, {"passwordHash": 1})
-    if not verify_password(form.password, user.get("passwordHash") if user else None):
+    # argon2 is CPU-bound (~50-100 ms): run it in the thread pool so other requests,
+    # including health checks, keep being served during a burst of logins.
+    password_hash = user.get("passwordHash") if user else None
+    if not await run_in_threadpool(verify_password, form.password, password_hash):
         LOGINS.labels("failure").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
