@@ -152,6 +152,12 @@ async def consume_refresh_token(redis: Redis, refresh_token: str) -> RefreshGran
     return RefreshGrant(user_id=user_id, session_id=session_id, digest=digest)
 
 
+async def session_of_refresh_token(redis: Redis, refresh_token: str) -> str | None:
+    """The session a refresh token belongs to, without consuming it."""
+    value = await redis.get(REFRESH_PREFIX + _hash(refresh_token))
+    return value.partition(":")[2] if value else None
+
+
 async def revoke_session(redis: Redis, session_id: str) -> None:
     """End the session: its current refresh token stops working."""
     digest = await redis.getdel(SESSION_PREFIX + session_id)
