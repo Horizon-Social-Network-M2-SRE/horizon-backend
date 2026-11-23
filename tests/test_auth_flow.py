@@ -156,7 +156,7 @@ def test_signed_out_access_token_is_refused(services_client, user_id):
     assert services_client.post("/auth/logout", headers=headers).status_code == 204
 
     assert services_client.get("/auth/me", headers=headers).status_code == 401
-    assert services_client.post("/auth/logout", headers=headers).status_code == 401
+    assert services_client.post("/auth/logout", headers=headers).status_code == 204  # idempotent
 
 
 def test_logout_revokes_refresh_token_and_clears_cookie(services_client, user_id):
@@ -183,6 +183,26 @@ def test_logout_refuses_every_access_token_of_the_session(services_client, user_
     assert services_client.post("/auth/logout", headers=_auth(after_refresh)).status_code == 204
     # The token from before the refresh is in the same session, so it is refused too.
     assert services_client.get("/auth/me", headers=_auth(before_refresh)).status_code == 401
+
+
+def test_logout_with_expired_access_token_uses_the_refresh_cookie(services_client, user_id):
+    login = _login(services_client)
+    cookie = login.cookies[COOKIE]
+    settings = services_client.app.state.settings
+    expired = create_access_token(user_id, "any", settings, now=time.time() - settings.access_token_ttl_seconds - 1)
+
+    response = services_client.post("/auth/logout", headers=_auth(expired))  # browser sends the cookie
+
+    assert response.status_code == 204
+    assert COOKIE not in services_client.cookies
+    assert _refresh(services_client, cookie=cookie).status_code == 401
+    assert services_client.get("/auth/me", headers=_auth(login.json()["access_token"])).status_code == 401
+
+
+def test_logout_without_any_credentials_just_clears_the_cookie(services_client):
+    response = services_client.post("/auth/logout")
+    assert response.status_code == 204
+    assert "Max-Age=0" in response.headers["set-cookie"] or 'refresh_token=""' in response.headers["set-cookie"]
 
 
 def test_deny_list_entry_lives_only_until_token_expiry(services_client, user_id):
