@@ -8,8 +8,9 @@
 - Refresh token: opaque random string. Redis stores only its SHA-256 under
   ``auth:refresh:<hash>`` -> ``<user id>:<sid>``, with the refresh TTL. It is
   single-use: refreshing deletes it atomically (GETDEL) and issues a new pair in
-  the same session. Logout revokes the session's refresh token through ``sid``,
-  so the client does not need to send it.
+  the same session, but only if the session still points at the consumed token, so a
+  refresh racing a logout cannot bring the session back. Logout revokes the session's
+  refresh token through ``sid``, so the client does not need to send it.
 """
 
 import hashlib
@@ -51,6 +52,7 @@ class TokenPair:
 class RefreshGrant:
     user_id: str
     session_id: str
+    digest: str  # hash of the consumed refresh token
 
 
 def create_access_token(user_id: str, session_id: str, settings: Settings, now: float | None = None) -> str:
@@ -87,18 +89,20 @@ def _hash(refresh_token: str) -> str:
     return hashlib.sha256(refresh_token.encode()).hexdigest()
 
 
-async def issue_tokens(
-    redis: Redis, user_id: str, settings: Settings, session_id: str | None = None
-) -> TokenPair:
-    """New pair. Without ``session_id`` a new session starts (login); with it, the session continues (refresh)."""
-    session_id = session_id or uuid.uuid4().hex
-    refresh_token = secrets.token_urlsafe(48)
-    digest = _hash(refresh_token)
-    ttl = settings.refresh_token_ttl_seconds
-    async with redis.pipeline(transaction=True) as pipe:
-        pipe.set(REFRESH_PREFIX + digest, f"{user_id}:{session_id}", ex=ttl)
-        pipe.set(SESSION_PREFIX + session_id, digest, ex=ttl)
-        await pipe.execute()
+# Store the new refresh token only if the session still holds the one just consumed.
+# KEYS: session key, new refresh key. ARGV: consumed digest, new digest, owner, ttl.
+# Atomic in Redis, so it cannot interleave with revoke_session (logout).
+_ROTATE_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
+redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[4])
+return 1
+"""
+
+
+def _new_pair(user_id: str, session_id: str, refresh_token: str, settings: Settings) -> TokenPair:
     return TokenPair(
         access_token=create_access_token(user_id, session_id, settings),
         refresh_token=refresh_token,
@@ -106,13 +110,46 @@ async def issue_tokens(
     )
 
 
+async def issue_tokens(redis: Redis, user_id: str, settings: Settings) -> TokenPair:
+    """New session (login) with its first token pair."""
+    session_id = uuid.uuid4().hex
+    refresh_token = secrets.token_urlsafe(48)
+    digest = _hash(refresh_token)
+    ttl = settings.refresh_token_ttl_seconds
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.set(REFRESH_PREFIX + digest, f"{user_id}:{session_id}", ex=ttl)
+        pipe.set(SESSION_PREFIX + session_id, digest, ex=ttl)
+        await pipe.execute()
+    return _new_pair(user_id, session_id, refresh_token, settings)
+
+
+async def rotate_tokens(redis: Redis, grant: RefreshGrant, settings: Settings) -> TokenPair | None:
+    """New pair in the same session (refresh), or None if the session ended meanwhile."""
+    refresh_token = secrets.token_urlsafe(48)
+    digest = _hash(refresh_token)
+    stored = await redis.eval(
+        _ROTATE_SCRIPT,
+        2,
+        SESSION_PREFIX + grant.session_id,
+        REFRESH_PREFIX + digest,
+        grant.digest,
+        digest,
+        f"{grant.user_id}:{grant.session_id}",
+        settings.refresh_token_ttl_seconds,
+    )
+    if not stored:
+        return None
+    return _new_pair(grant.user_id, grant.session_id, refresh_token, settings)
+
+
 async def consume_refresh_token(redis: Redis, refresh_token: str) -> RefreshGrant | None:
     """Delete the refresh token and return its owner, or None if unknown, expired, used or revoked."""
-    value = await redis.getdel(REFRESH_PREFIX + _hash(refresh_token))
+    digest = _hash(refresh_token)
+    value = await redis.getdel(REFRESH_PREFIX + digest)
     if value is None:
         return None
     user_id, _, session_id = value.partition(":")
-    return RefreshGrant(user_id=user_id, session_id=session_id)
+    return RefreshGrant(user_id=user_id, session_id=session_id, digest=digest)
 
 
 async def revoke_session(redis: Redis, session_id: str) -> None:
