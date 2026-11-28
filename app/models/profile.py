@@ -13,7 +13,7 @@ other types are rejected (``extra="forbid"``).
 """
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, TypeAdapter
 from pydantic.alias_generators import to_camel
@@ -61,7 +61,7 @@ class TeacherProfile(ProfileBase):
 
 
 Profile = Annotated[
-    Union[StudentProfile, StaffProfile, TeacherProfile],
+    StudentProfile | StaffProfile | TeacherProfile,
     Field(discriminator="user_type"),
 ]
 

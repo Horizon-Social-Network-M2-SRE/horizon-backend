@@ -23,7 +23,7 @@ async def health() -> dict[str, str]:
 async def _check(name: str, coro: Awaitable[None]) -> str:
     try:
         await asyncio.wait_for(coro, CHECK_TIMEOUT_SECONDS)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # The response only says "down"; the log says why (timeout, refused, auth...).
         logger.warning("readiness check failed for %s: %r", name, exc)
         return "down"

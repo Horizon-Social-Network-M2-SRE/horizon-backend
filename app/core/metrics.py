@@ -10,12 +10,8 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-REQUESTS = Counter(
-    "http_requests_total", "HTTP requests", ["method", "route", "status"]
-)
-LATENCY = Histogram(
-    "http_request_duration_seconds", "HTTP request latency", ["method", "route"]
-)
+REQUESTS = Counter("http_requests_total", "HTTP requests", ["method", "route", "status"])
+LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["method", "route"])
 
 _SKIP = {"/metrics", "/health", "/health/ready"}
 
