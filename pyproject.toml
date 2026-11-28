@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "httpx>=0.27",
+    # Same release as CI (ruff-version of horizon-infrastructure's python-ci.yml).
+    "ruff==0.17.6",
 ]
 
 [build-system]
@@ -31,3 +33,7 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
