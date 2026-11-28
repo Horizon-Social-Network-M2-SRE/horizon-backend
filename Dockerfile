@@ -12,12 +12,16 @@ COPY pyproject.toml ./
 RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
  && pip install -r requirements.txt
 COPY app ./app
-RUN pip install --no-deps .
+# pip is not needed once the app is installed: its vendored urllib3/msgpack fail the image scan.
+RUN pip install --no-deps . && pip uninstall -y pip
 
 # ---- runtime: only the virtualenv, non-root user ----
 FROM python:3.13-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH"
-RUN groupadd --system --gid 10001 app \
+# Debian security fixes newer than the base image, and no pip at run time (nothing installs there).
+RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/* \
+ && python -m pip uninstall -y pip \
+ && groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 COPY --from=build /opt/venv /opt/venv
 WORKDIR /app
