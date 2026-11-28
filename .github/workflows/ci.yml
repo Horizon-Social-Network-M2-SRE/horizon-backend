@@ -9,34 +9,19 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports: ["27017:27017"]
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:7
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      TEST_MONGODB_URI: mongodb://localhost:27017
-      TEST_REDIS_URL: redis://localhost:6379/15
-      REQUIRE_SERVICES: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-      - run: pip install -e '.[dev]'
-      - run: pytest -ra
+  # Shared checks from horizon-infrastructure (S1-02): ruff, pytest with MongoDB and Redis, gitleaks,
+  # then the image built, scanned with Trivy and pushed to GHCR (sha-<commit> and main) on main.
+  # Check names: ci / lint, ci / test, ci / secrets, ci / image.
+  ci:
+    uses: Horizon-Social-Network-M2-SRE/horizon-infrastructure/.github/workflows/python-ci.yml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      mongo-image: mongo:7
+      redis-image: redis:7
 
+  # Backend-specific runtime checks on the image (health, JWT_SECRET required, non-root).
   container:
     runs-on: ubuntu-latest
     steps:
