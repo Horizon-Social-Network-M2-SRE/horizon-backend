@@ -13,7 +13,7 @@ jobs:
   # then the image built, scanned with Trivy and pushed to GHCR (sha-<commit> and main) on main.
   # Check names: ci / lint, ci / test, ci / secrets, ci / image.
   ci:
-    uses: Horizon-Social-Network-M2-SRE/horizon-infrastructure/.github/workflows/python-ci.yml@main
+    uses: Horizon-Social-Network-M2-SRE/horizon-infrastructure/.github/workflows/python-ci.yml@feature/1-reusable-ci
     permissions:
       contents: read
       packages: write
